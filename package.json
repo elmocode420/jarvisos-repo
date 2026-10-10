@@ -5,9 +5,10 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node --env-file-if-exists=.env server.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.133.0",
     "ws": "^8.18.0"
   }
 }

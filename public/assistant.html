@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f1115">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg">
+  <title>Jarvis</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; background: #0f1115; color: #e8e8e8; text-align: center; padding: 1rem; box-sizing: border-box; }
+    h1 { margin: 0; } #status { color: #8b949e; min-height: 3rem; max-width: 22rem; }
+    #orb { width: 120px; height: 120px; border-radius: 50%; background: #1f6feb; transition: transform .2s, background .2s; }
+    #orb.talk { background: #2ea043; animation: pulse 1s infinite; } #orb.listen { background: #d29922; animation: pulse 1.6s infinite; } #orb.ring { background: #da3633; animation: pulse .6s infinite; }
+    @keyframes pulse { 50% { transform: scale(1.12); } }
+    button { padding: .8rem 1.4rem; border: 0; border-radius: 999px; font-size: 1.05rem; cursor: pointer; color: #fff; }
+    .green { background: #2ea043; } .red { background: #da3633; } .blue { background: #1f6feb; }
+    .row { display: flex; gap: .8rem; } .hidden { display: none !important; }
+    #transcript { max-width: 22rem; font-size: .95rem; color: #c9d1d9; }
+    form { display: flex; gap: .5rem; } input { padding: .6rem; border-radius: 8px; border: 1px solid #333; background: #1b1e24; color: inherit; }
+  </style>
+</head>
+<body>
+  <h1>Jarvis</h1>
+  <div id="orb"></div>
+  <div id="status">Toca "Activar" para empezar.</div>
+  <div id="transcript"></div>
+  <button class="blue" id="start">Activar</button>
+  <div class="row hidden" id="ringBtns">
+    <button class="green" id="accept">Contestar</button>
+    <button class="red" id="decline">Rechazar</button>
+  </div>
+  <div class="row hidden" id="idleBtns">
+    <button class="blue" id="dial">Hablar con Jarvis</button>
+  </div>
+  <button class="red hidden" id="hangup">Colgar</button>
+  <form id="textForm" class="hidden"><input id="textIn" placeholder="o escribe…" autocomplete="off"><button class="blue">Enviar</button></form>
+  <script type="module" src="assistant.js"></script>
+</body>
+</html>

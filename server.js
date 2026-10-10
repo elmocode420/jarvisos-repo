@@ -1,14 +1,22 @@
-// Servidor de señalización: sirve el cliente y reenvía mensajes WebRTC entre usuarios.
-// El audio NO pasa por aquí: va directo entre navegadores (P2P).
+// Servidor: sirve la app web, la señalización WebRTC (/) y el asistente de voz (/assistant).
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { WebSocketServer } from 'ws';
+import { turn, seed } from './src/brain.js';
+import { synthesize, piperConfigured } from './src/tts.js';
+import { startScheduler } from './src/scheduler.js';
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC = join(fileURLToPath(new URL('.', import.meta.url)), 'public');
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css' };
+const TYPES = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css',
+  '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml',
+};
+const TOKEN = process.env.ACCESS_TOKEN || randomBytes(12).toString('hex');
+const tokenOk = (t) => { const a = Buffer.from(String(t)), b = Buffer.from(TOKEN); return a.length === b.length && timingSafeEqual(a, b); };
 
 const server = http.createServer(async (req, res) => {
   const path = req.url === '/' ? '/index.html' : req.url.split('?')[0];
@@ -23,41 +31,117 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-const wss = new WebSocketServer({ server });
-const users = new Map(); // nombre -> socket
-
 const send = (ws, msg) => ws.readyState === 1 && ws.send(JSON.stringify(msg));
-const broadcastUsers = () => {
-  const list = [...users.keys()];
-  for (const ws of users.values()) send(ws, { type: 'users', users: list });
-};
 
-wss.on('connection', (ws) => {
+// ---------- Llamadas de voz entre usuarios (WebRTC, señalización) ----------
+const p2p = new WebSocketServer({ noServer: true });
+const users = new Map();
+const broadcastUsers = () => { const list = [...users.keys()]; for (const ws of users.values()) send(ws, { type: 'users', users: list }); };
+
+p2p.on('connection', (ws) => {
   ws.on('message', (raw) => {
-    let msg;
-    try { msg = JSON.parse(raw); } catch { return; }
-
+    let msg; try { msg = JSON.parse(raw); } catch { return; }
     if (msg.type === 'register') {
       const name = String(msg.name || '').trim().slice(0, 24);
       if (!name || users.has(name)) return send(ws, { type: 'error', error: 'Nombre vacío o en uso' });
-      ws.name = name;
-      users.set(name, ws);
+      ws.name = name; users.set(name, ws);
       send(ws, { type: 'registered', name });
       return broadcastUsers();
     }
-
     if (!ws.name) return;
-    // offer / answer / ice / hangup / reject: se reenvían al destinatario
     if (['offer', 'answer', 'ice', 'hangup', 'reject'].includes(msg.type)) {
       const target = users.get(msg.to);
       if (target) send(target, { ...msg, from: ws.name, to: undefined });
       else send(ws, { type: 'unavailable', to: msg.to });
     }
   });
-
-  ws.on('close', () => {
-    if (ws.name && users.get(ws.name) === ws) { users.delete(ws.name); broadcastUsers(); }
-  });
+  ws.on('close', () => { if (ws.name && users.get(ws.name) === ws) { users.delete(ws.name); broadcastUsers(); } });
 });
 
-server.listen(PORT, () => console.log(`JarvisOS Voice en http://localhost:${PORT}`));
+// ---------- Asistente de voz ----------
+const assistant = new WebSocketServer({ noServer: true });
+const clients = new Set();
+const calls = new Map(); // callId -> { id, line, tries, timer, taken }
+let callSeq = 0;
+
+async function say(ws, text, end = false) {
+  const wav = await synthesize(text);
+  send(ws, { type: 'say', text, audio: wav ? wav.toString('base64') : null, end });
+}
+
+function ring(call) {
+  call.taken = false;
+  for (const ws of clients) send(ws, { type: 'ring', callId: call.id, reason: call.reason });
+  clearTimeout(call.timer);
+  call.timer = setTimeout(() => {
+    if (call.taken) return;
+    for (const ws of clients) send(ws, { type: 'ring-cancel', callId: call.id });
+    if (++call.tries < 3) call.retry = setTimeout(() => ring(call), 5 * 60000); // reintenta en 5 min
+    else calls.delete(call.id);
+  }, 45000);
+}
+
+function incoming({ reason, line }) {
+  const call = { id: ++callSeq, reason, line, tries: 0 };
+  calls.set(call.id, call);
+  ring(call);
+}
+
+startScheduler(incoming);
+
+assistant.on('connection', (ws) => {
+  clients.add(ws);
+  ws.messages = [];
+  ws.chain = Promise.resolve(); // procesa un turno a la vez
+  send(ws, { type: 'ready', piper: piperConfigured() });
+  for (const c of calls.values()) if (!c.taken) send(ws, { type: 'ring', callId: c.id, reason: c.reason }); // llamadas pendientes
+
+  ws.on('message', (raw) => {
+    let msg; try { msg = JSON.parse(raw); } catch { return; }
+    ws.chain = ws.chain.then(async () => {
+      if (msg.type === 'answer') {
+        const call = calls.get(msg.callId);
+        if (!call || call.taken) return send(ws, { type: 'ring-cancel', callId: msg.callId });
+        call.taken = true; clearTimeout(call.timer); clearTimeout(call.retry); calls.delete(call.id);
+        for (const other of clients) if (other !== ws) send(other, { type: 'ring-cancel', callId: call.id });
+        ws.messages = []; seed(ws.messages, call.line);
+        await say(ws, call.line);
+      } else if (msg.type === 'decline') {
+        // se deja que el temporizador reintente más tarde
+        send(ws, { type: 'ring-cancel', callId: msg.callId });
+      } else if (msg.type === 'dial') {
+        ws.messages = [];
+        const hello = 'Dime, ¿en qué te ayudo?';
+        seed(ws.messages, hello);
+        await say(ws, hello);
+      } else if (msg.type === 'user' && typeof msg.text === 'string' && msg.text.trim()) {
+        let reply;
+        try { reply = await turn(ws.messages, msg.text.trim().slice(0, 1000)); }
+        catch (e) { console.error('Error del cerebro:', e.message); reply = 'Tuve un problema para pensar eso. Inténtalo otra vez.'; }
+        const end = reply.includes('[FIN]');
+        await say(ws, reply.replace('[FIN]', '').trim() || 'Hasta luego.', end);
+      } else if (msg.type === 'hangup') {
+        ws.messages = [];
+      }
+    }).catch((e) => console.error('Error en mensaje:', e));
+  });
+  ws.on('close', () => clients.delete(ws));
+});
+
+server.on('upgrade', (req, socket, head) => {
+  const url = new URL(req.url, 'http://x');
+  if (url.pathname === '/assistant') {
+    if (!tokenOk(url.searchParams.get('token') || '')) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); return socket.destroy(); }
+    assistant.handleUpgrade(req, socket, head, (ws) => assistant.emit('connection', ws, req));
+  } else {
+    p2p.handleUpgrade(req, socket, head, (ws) => p2p.emit('connection', ws, req));
+  }
+});
+
+server.listen(PORT, () => {
+  console.log(`JarvisOS en http://localhost:${PORT}`);
+  console.log(`Asistente: http://localhost:${PORT}/assistant.html#${TOKEN}`);
+  if (!process.env.ACCESS_TOKEN) console.log('(token temporal; fija ACCESS_TOKEN en .env para que no cambie)');
+  if (!piperConfigured()) console.log('Piper no configurado (PIPER_MODEL): usaré la voz del navegador como respaldo.');
+  if (!process.env.ANTHROPIC_API_KEY) console.log('Falta ANTHROPIC_API_KEY: el asistente no podrá responder.');
+});
