@@ -24,15 +24,36 @@ function ringtoneStart() {
 }
 const ringtoneStop = () => { clearInterval(ringTimer); ringTimer = null; navigator.vibrate?.(0); };
 
-// ---------- Activación (gesto del usuario: desbloquea audio y pide permisos) ----------
-$('start').onclick = async () => {
-  actx = new (window.AudioContext || window.webkitAudioContext)();
-  await actx.resume();
+// ---------- Activación ----------
+// El primer toque en "Activar" pide permisos (notificaciones/Push). Después la app se reconecta sola al abrirse,
+// por ejemplo al tocar la notificación de una llamada.
+function ensureAudio() {
+  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+  actx.resume?.();
+}
+
+const b64ToBytes = (b64) => Uint8Array.from(atob(b64.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+
+async function enablePush() {
+  if (!swReg || !('PushManager' in window) || Notification.permission !== 'granted') return false;
+  const { key } = await (await fetch('/api/push-key', { headers: { Authorization: `Bearer ${token}` } })).json();
+  const sub = (await swReg.pushManager.getSubscription()) || await swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
+  const r = await fetch('/api/subscribe', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(sub) });
+  return r.ok;
+}
+
+async function boot(fromClick) {
   if ('serviceWorker' in navigator) swReg = await navigator.serviceWorker.register('sw.js').catch(() => null);
-  if ('Notification' in window && Notification.permission === 'default') await Notification.requestPermission();
+  if (fromClick && 'Notification' in window && Notification.permission === 'default') await Notification.requestPermission();
+  const pushOk = await enablePush().catch((e) => { console.warn('Push no disponible:', e.message); return false; });
+  store.set('jarvis-active', '1');
   show('start', false);
   connect();
-};
+  if (fromClick) setStatus(pushOk ? 'Listo. Te llamaré aunque tengas la app cerrada.' : 'Listo, pero sin avisos con la app cerrada (revisa permisos y que uses HTTPS).');
+}
+
+$('start').onclick = () => { ensureAudio(); boot(true); };
+if (store.get('jarvis-active') === '1' && token) boot(false);
 
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/assistant?token=${encodeURIComponent(token)}`);
@@ -44,14 +65,11 @@ const send = (m) => ws?.readyState === 1 && ws.send(JSON.stringify(m));
 
 function onMessage(msg) {
   switch (msg.type) {
-    case 'ready': setStatus('Listo. Te llamaré cuando toque.'); show('idleBtns', !inCall); break;
+    case 'ready': if (!inCall && !currentCallId) setStatus('Listo. Te llamaré cuando toque.'); show('idleBtns', !inCall && !currentCallId); break;
     case 'ring':
       if (inCall || currentCallId) return;
       currentCallId = msg.callId; setOrb('ring'); setStatus('📞 Jarvis te está llamando…');
       show('ringBtns', true); show('idleBtns', false); ringtoneStart();
-      if (document.hidden && Notification.permission === 'granted') {
-        swReg?.showNotification('Jarvis te está llamando', { body: 'Toca para contestar', requireInteraction: true, vibrate: [300, 150, 300], tag: 'jarvis-call' });
-      }
       break;
     case 'ring-cancel':
       if (msg.callId === currentCallId) { currentCallId = null; ringtoneStop(); show('ringBtns', false); if (!inCall) { setOrb(''); setStatus('Llamada perdida.'); show('idleBtns', true); } }
@@ -61,9 +79,9 @@ function onMessage(msg) {
 }
 
 // ---------- Llamada ----------
-$('accept').onclick = () => { ringtoneStop(); show('ringBtns', false); beginCall(); send({ type: 'answer', callId: currentCallId }); currentCallId = null; };
+$('accept').onclick = () => { ensureAudio(); ringtoneStop(); show('ringBtns', false); beginCall(); send({ type: 'answer', callId: currentCallId }); currentCallId = null; };
 $('decline').onclick = () => { ringtoneStop(); show('ringBtns', false); send({ type: 'decline', callId: currentCallId }); currentCallId = null; setOrb(''); setStatus('Rechazada. Insistiré en unos minutos.'); show('idleBtns', true); };
-$('dial').onclick = () => { beginCall(); send({ type: 'dial' }); };
+$('dial').onclick = () => { ensureAudio(); beginCall(); send({ type: 'dial' }); };
 $('hangup').onclick = () => endCall();
 $('textForm').onsubmit = (e) => { e.preventDefault(); const t = $('textIn').value.trim(); if (!t) return; $('textIn').value = ''; stopListening(); userSaid(t); };
 

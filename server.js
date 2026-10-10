@@ -8,6 +8,7 @@ import { WebSocketServer } from 'ws';
 import { turn, seed } from './src/brain.js';
 import { synthesize, piperConfigured } from './src/tts.js';
 import { startScheduler } from './src/scheduler.js';
+import { publicKey, addSubscription, notifyAll } from './src/push.js';
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC = join(fileURLToPath(new URL('.', import.meta.url)), 'public');
@@ -18,7 +19,23 @@ const TYPES = {
 const TOKEN = process.env.ACCESS_TOKEN || randomBytes(12).toString('hex');
 const tokenOk = (t) => { const a = Buffer.from(String(t)), b = Buffer.from(TOKEN); return a.length === b.length && timingSafeEqual(a, b); };
 
+const readJson = (req) => new Promise((resolve, reject) => {
+  let n = 0; const chunks = [];
+  req.on('data', (c) => { n += c.length; if (n > 20000) { reject(new Error('demasiado grande')); req.destroy(); } else chunks.push(c); });
+  req.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks))); } catch (e) { reject(e); } });
+});
+const authOk = (req) => tokenOk((req.headers.authorization || '').replace(/^Bearer /, ''));
+
 const server = http.createServer(async (req, res) => {
+  if (req.url.startsWith('/api/')) {
+    if (!authOk(req)) { res.writeHead(401).end(); return; }
+    if (req.method === 'GET' && req.url === '/api/push-key') { res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ key: publicKey() })); return; }
+    if (req.method === 'POST' && req.url === '/api/subscribe') {
+      try { res.writeHead(addSubscription(await readJson(req)) ? 204 : 400).end(); } catch { res.writeHead(400).end(); }
+      return;
+    }
+    res.writeHead(404).end(); return;
+  }
   const path = req.url === '/' ? '/index.html' : req.url.split('?')[0];
   const file = normalize(join(PUBLIC, path));
   if (!file.startsWith(PUBLIC)) { res.writeHead(403).end(); return; }
@@ -72,6 +89,7 @@ async function say(ws, text, end = false) {
 function ring(call) {
   call.taken = false;
   for (const ws of clients) send(ws, { type: 'ring', callId: call.id, reason: call.reason });
+  notifyAll({ title: 'Jarvis te está llamando', body: call.line, callId: call.id }); // llega aunque la app esté cerrada
   clearTimeout(call.timer);
   call.timer = setTimeout(() => {
     if (call.taken) return;
