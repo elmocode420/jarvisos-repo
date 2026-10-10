@@ -1,0 +1,13 @@
+{
+  "name": "jarvisos-voice",
+  "version": "0.1.0",
+  "description": "Llamadas de voz internas (WebRTC) para JarvisOS",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

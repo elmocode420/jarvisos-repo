@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JarvisOS Voice</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 420px; margin: 2rem auto; padding: 0 1rem; background: #0f1115; color: #e8e8e8; }
+    button { padding: .6rem 1rem; border: 0; border-radius: 8px; cursor: pointer; font-size: 1rem; }
+    .call { background: #2ea043; color: #fff; } .hang { background: #da3633; color: #fff; }
+    input { padding: .6rem; border-radius: 8px; border: 1px solid #333; background: #1b1e24; color: inherit; }
+    li { display: flex; justify-content: space-between; align-items: center; padding: .5rem 0; border-bottom: 1px solid #222; }
+    ul { list-style: none; padding: 0; } #status { color: #8b949e; min-height: 1.5rem; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <h1>JarvisOS Voice</h1>
+  <section id="login">
+    <input id="name" placeholder="Tu nombre" maxlength="24">
+    <button class="call" id="join">Entrar</button>
+  </section>
+  <section id="app" class="hidden">
+    <p>Conectado como <b id="me"></b></p>
+    <p id="status"></p>
+    <div id="incoming" class="hidden">
+      <b id="caller"></b> te está llamando
+      <button class="call" id="accept">Contestar</button>
+      <button class="hang" id="decline">Rechazar</button>
+    </div>
+    <button class="hang hidden" id="hangup">Colgar</button>
+    <h3>Usuarios en línea</h3>
+    <ul id="users"></ul>
+  </section>
+  <audio id="remote" autoplay></audio>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
