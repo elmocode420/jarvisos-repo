@@ -5,8 +5,11 @@ const setOrb = (c) => ($('orb').className = c || '');
 const setStatus = (t) => ($('status').textContent = t);
 
 const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
-const token = location.hash.slice(1) || store.get('jarvis-token') || '';
-if (location.hash) { store.set('jarvis-token', token); history.replaceState(null, '', location.pathname); }
+// Token: #hash, ?t= (sobrevive al "añadir a pantalla de inicio" de iOS) o el guardado.
+const qs = new URLSearchParams(location.search);
+let token = location.hash.slice(1) || qs.get('t') || store.get('jarvis-token') || '';
+if (token) store.set('jarvis-token', token);
+if (location.hash) history.replaceState(null, '', location.pathname + location.search); // el ?t se queda: el marcador de iOS lo hereda
 
 let ws, swReg, actx, ringTimer, currentCallId = null, inCall = false, listening = false, recog, silentTurns = 0, currentAudio = null;
 
@@ -52,7 +55,15 @@ async function boot(fromClick) {
   if (fromClick) setStatus(pushOk ? 'Listo. Te llamaré aunque tengas la app cerrada.' : 'Listo, pero sin avisos con la app cerrada (revisa permisos y que uses HTTPS).');
 }
 
-$('start').onclick = () => { ensureAudio(); boot(true); };
+$('start').onclick = () => {
+  ensureAudio();
+  if (!token) { // plan C (PWA de iOS sin token): pedirlo una sola vez
+    const t = (prompt('Pega tu código de acceso de Jarvis:') || '').trim();
+    if (!t) { setStatus('Sin código de acceso no puedo conectar.'); return; }
+    token = t; store.set('jarvis-token', token);
+  }
+  boot(true);
+};
 if (store.get('jarvis-active') === '1' && token) boot(false);
 
 function connect() {

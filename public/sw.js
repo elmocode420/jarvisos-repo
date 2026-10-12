@@ -5,10 +5,12 @@ self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener('push', (e) => {
   let d = {};
   try { d = e.data.json(); } catch {}
+  // Con callId es una llamada (insistente); sin él es un aviso de agente (normal, no pisa la llamada).
+  const call = d.callId != null;
   e.waitUntil(self.registration.showNotification(d.title || 'Jarvis', {
     body: d.body || 'Toca para contestar',
-    tag: 'jarvis-call', renotify: true, requireInteraction: true,
-    vibrate: [300, 150, 300, 150, 300], icon: 'icon.svg', badge: 'icon.svg',
+    tag: call ? 'jarvis-call' : `agente-${Date.now()}`, renotify: call, requireInteraction: call,
+    vibrate: call ? [300, 150, 300, 150, 300] : [200], icon: 'icon.svg', badge: 'icon.svg',
   }));
 });
 

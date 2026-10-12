@@ -34,6 +34,16 @@ const server = http.createServer(async (req, res) => {
       try { res.writeHead(addSubscription(await readJson(req)) ? 204 : 400).end(); } catch { res.writeHead(400).end(); }
       return;
     }
+    // Aviso de un agente (Hermes, colector del HUD...) al celular: push, sin llamada ni voz.
+    if (req.method === 'POST' && req.url === '/api/notify') {
+      try {
+        const { title, body, from } = await readJson(req);
+        if (!body) { res.writeHead(400).end(); return; }
+        await notifyAll({ title: String(title || (from ? `🤖 ${from}` : '🤖 Agente')).slice(0, 80), body: String(body).slice(0, 300) });
+        res.writeHead(204).end();
+      } catch { res.writeHead(400).end(); }
+      return;
+    }
     res.writeHead(404).end(); return;
   }
   const path = req.url === '/' ? '/index.html' : req.url.split('?')[0];
@@ -89,7 +99,11 @@ async function say(ws, text, end = false) {
 function ring(call) {
   call.taken = false;
   for (const ws of clients) send(ws, { type: 'ring', callId: call.id, reason: call.reason });
-  notifyAll({ title: 'Jarvis te está llamando', body: call.line, callId: call.id }); // llega aunque la app esté cerrada
+  // Timbre insistente: iOS no permite sonido largo en un push, así que se simula
+  // con una ráfaga de 3 avisos (0 s, 5 s, 10 s) sobre el mismo hilo (tag) — cada uno re-suena.
+  notifyAll({ title: '📞 Jarvis te está llamando', body: call.line, callId: call.id });
+  setTimeout(() => notifyAll({ title: '📞 Jarvis sigue llamando…', body: call.line, callId: call.id }), 5000);
+  setTimeout(() => notifyAll({ title: '📞 Última llamada de Jarvis', body: call.line, callId: call.id }), 10000);
   clearTimeout(call.timer);
   call.timer = setTimeout(() => {
     if (call.taken) return;
@@ -161,5 +175,5 @@ server.listen(PORT, () => {
   console.log(`Asistente: http://localhost:${PORT}/assistant.html#${TOKEN}`);
   if (!process.env.ACCESS_TOKEN) console.log('(token temporal; fija ACCESS_TOKEN en .env para que no cambie)');
   if (!piperConfigured()) console.log('Piper no configurado (PIPER_MODEL): usaré la voz del navegador como respaldo.');
-  if (!process.env.ANTHROPIC_API_KEY) console.log('Falta ANTHROPIC_API_KEY: el asistente no podrá responder.');
+  console.log('Cerebro: Claude CLI (suscripción) — sin API key.');
 });
