@@ -2,7 +2,7 @@
 // En vez del SDK (API key de paga), usa `claude -p` con la suscripción de Jose Lu.
 // Mismo contrato que el original: turn(messages, userText) → texto a decir; seed().
 // El original con SDK quedó en brain-sdk.js.bak por si algún día hay API key.
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { store } from './store.js';
@@ -108,7 +108,55 @@ function vaultContext() {
   return vaultCache.text;
 }
 
+/* ---------- proceso de Claude persistente ----------
+   `claude -p` tarda 4–9 s sólo en arrancar. Un proceso en modo stream-json se
+   queda vivo y cada turno cuesta ~1 s. Se recicla cada 8 turnos para que el
+   contexto no crezca, y si falla se cae al modo de un disparo (abajo). */
+const FLAGS = ['--model', MODEL, '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence', '--tools', ''];
+let worker = null, queue = Promise.resolve();
+
+function startWorker() {
+  const p = spawn(CLAUDE, ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', ...FLAGS],
+    { cwd: tmpdir(), stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env } });
+  const w = { p, buf: '', waiter: null, dead: false, turns: 0 };
+  const die = (why) => { w.dead = true; if (w.waiter) { const f = w.waiter; w.waiter = null; f(new Error('worker: ' + why)); } };
+  p.stdout.on('data', (d) => {
+    w.buf += d; let i;
+    while ((i = w.buf.indexOf('\n')) >= 0) {
+      const line = w.buf.slice(0, i); w.buf = w.buf.slice(i + 1);
+      try {
+        const e = JSON.parse(line);
+        if (e.type === 'result' && w.waiter) { const f = w.waiter; w.waiter = null; f(e.is_error ? new Error('claude: ' + (e.result || 'error')) : null, e.result); }
+      } catch { /* línea que no es JSON */ }
+    }
+  });
+  p.stderr.on('data', () => {});
+  p.on('exit', (c) => die('salió con ' + c));
+  p.on('error', (e) => die(e.message));
+  return w;
+}
+const warm = () => { if (!worker || worker.dead) worker = startWorker(); };
+process.on('exit', () => { try { worker?.p.kill(); } catch {} });
+
+function askWorker(text) {
+  return new Promise((resolve, reject) => {
+    if (!worker || worker.dead || worker.turns >= 8) { try { worker?.p.kill(); } catch {} worker = startWorker(); }
+    const w = worker; w.turns++;
+    const to = setTimeout(() => { try { w.p.kill(); } catch {} }, 60000);   // si se cuelga: kill → exit → reject
+    w.waiter = (err, res) => { clearTimeout(to); err ? reject(err) : resolve(String(res || '').trim()); };
+    w.p.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: text } }) + '\n');
+  });
+}
+
 function callClaude(prompt) {
+  const run = () => askWorker(prompt).catch((e) => { console.error('brain(worker):', e.message, '→ modo de un disparo'); return callClaudeOnce(prompt); });
+  const r = queue.then(run, run);       // un turno a la vez
+  queue = r.catch(() => {});
+  return r;
+}
+warm();   // calienta al arrancar el servidor: el primer turno de la primera llamada ya no paga el arranque
+
+function callClaudeOnce(prompt) {
   return new Promise((resolve, reject) => {
     // Arranque mínimo: sin MCP, sin skills, sin herramientas, sin persistir sesión, cwd neutro.
     // (--bare quedaría más rápido pero ignora la suscripción: exige API key.)
