@@ -96,19 +96,40 @@ $('dial').onclick = () => { ensureAudio(); beginCall(); send({ type: 'dial' }); 
 $('hangup').onclick = () => endCall();
 $('textForm').onsubmit = (e) => { e.preventDefault(); const t = $('textIn').value.trim(); if (!t) return; $('textIn').value = ''; stopListening(); userSaid(t); };
 
-function beginCall() { inCall = true; silentTurns = 0; $('transcript').textContent = ''; show('idleBtns', false); show('hangup', true); show('textForm', true); setStatus('En llamada…'); }
+function beginCall() { inCall = true; silentTurns = 0; thinking = false; speaking = false; farewell = false; $('transcript').textContent = ''; show('idleBtns', false); show('hangup', true); show('textForm', true); setStatus('En llamada…'); }
 function endCall() {
-  inCall = false; stopListening(); currentAudio?.pause(); speechSynthesis?.cancel();
+  inCall = false; thinking = false; speaking = false; farewell = false; clearTimeout(thinkTimer);
+  stopListening(); currentAudio?.pause(); speechSynthesis?.cancel();
   send({ type: 'hangup' }); setOrb(''); show('hangup', false); show('textForm', false); show('idleBtns', true); setStatus('Llamada terminada.');
 }
 
-function userSaid(text) { log('Tú', text); setOrb(''); setStatus('Pensando…'); send({ type: 'user', text }); }
+// Turnos: el micrófono solo está abierto cuando NI Jarvis piensa NI Jarvis habla.
+//   tú hablas → mic OFF · Jarvis piensa → mic OFF · Jarvis responde → mic OFF · termina → mic ON
+let thinking = false, speaking = false, farewell = false, thinkTimer = null;
+// Despedida: frase corta (≤6 palabras) para no colgar por un "nos vemos" dentro de una orden larga.
+const FAREWELL = /(adi[oó]s|hasta luego|hasta pronto|nos vemos|chao|chau|bye|cuelga|eso es todo|es todo por ahora|ya es todo)/i;
+const isFarewell = (t) => t.trim().split(/\s+/).length <= 6 && FAREWELL.test(t);
+
+function userSaid(text) {
+  stopListening();                       // mic apagado desde que terminas de hablar
+  thinking = true; farewell = isFarewell(text);
+  log('Tú', text); setOrb(''); setStatus('Pensando… (micrófono apagado)');
+  send({ type: 'user', text });
+  clearTimeout(thinkTimer);              // red de seguridad: si no llega respuesta, no te quedas mudo
+  thinkTimer = setTimeout(() => {
+    if (!inCall || !thinking) return;
+    thinking = false;
+    if (farewell) return endCall();
+    setStatus('Jarvis no respondió. Te vuelvo a escuchar…'); startListening();
+  }, 60000);
+}
 function log(who, text) { $('transcript').textContent = `${who}: ${text}`; }
 
 // ---------- Voz de Jarvis ----------
 async function speak({ text, audio, end }) {
   if (!inCall) return;
-  log('Jarvis', text); setOrb('talk'); setStatus('Jarvis habla…'); stopListening();
+  clearTimeout(thinkTimer); thinking = false; speaking = true;
+  log('Jarvis', text); setOrb('talk'); setStatus('Jarvis habla… (micrófono apagado)'); stopListening();
   await new Promise((resolve) => {
     if (audio) {
       currentAudio = new Audio(`data:audio/wav;base64,${audio}`);
@@ -118,13 +139,15 @@ async function speak({ text, audio, end }) {
       const u = new SpeechSynthesisUtterance(text); u.lang = 'es-MX'; u.onend = resolve; u.onerror = resolve; speechSynthesis.speak(u);
     } else resolve();
   });
+  speaking = false;
   if (!inCall) return;
-  if (end) return endCall();
-  startListening();
+  if (end || farewell) { farewell = false; return endCall(); }  // despedida: se cierra la llamada y el mic
+  startListening();                      // terminó de hablar → el mic vuelve a abrirse
 }
 
 // ---------- Oído (reconocimiento de voz del navegador) ----------
 function startListening() {
+  if (!inCall || thinking || speaking || listening) return;   // nunca abrir el mic mientras Jarvis piensa o habla
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) { setStatus('Tu navegador no tiene reconocimiento de voz; escribe abajo.'); return; }
   recog = new SR(); recog.lang = 'es-MX'; recog.interimResults = false; recog.maxAlternatives = 1;
