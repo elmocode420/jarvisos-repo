@@ -5,10 +5,14 @@ const setOrb = (c) => ($('orb').className = c || '');
 const setStatus = (t) => ($('status').textContent = t);
 
 const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
-// Token: #hash, ?t= (sobrevive al "añadir a pantalla de inicio" de iOS) o el guardado.
+// Token: candidatos en orden #hash, ?t= (sobrevive al "añadir a pantalla de inicio" de iOS) y el guardado.
+// Si el servidor rechaza uno (401) se prueba el siguiente; el que funcione se guarda. Así un icono viejo
+// con ?t= caducado no pisa el código bueno ya guardado.
 const qs = new URLSearchParams(location.search);
-let token = location.hash.slice(1) || qs.get('t') || store.get('jarvis-token') || '';
-if (token) store.set('jarvis-token', token);
+const cands = [location.hash.slice(1), qs.get('t'), store.get('jarvis-token')].filter((v, i, a) => v && a.indexOf(v) === i);
+let candIdx = 0;
+let token = cands[0] || '';
+const fp = (t) => (t ? `${t.slice(0, 4)}…${t.slice(-4)} (${t.length} caracteres)` : 'vacío');
 if (location.hash) history.replaceState(null, '', location.pathname + location.search); // el ?t se queda: el marcador de iOS lo hereda
 
 let ws, swReg, actx, ringTimer, currentCallId = null, inCall = false, listening = false, recog, silentTurns = 0, currentAudio = null;
@@ -69,7 +73,7 @@ if (store.get('jarvis-active') === '1' && token) boot(false);
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/assistant?token=${encodeURIComponent(token)}`);
   let opened = false;
-  ws.onopen = () => { opened = true; };
+  ws.onopen = () => { opened = true; store.set('jarvis-token', token); };
   ws.onmessage = (e) => onMessage(JSON.parse(e.data));
   ws.onclose = async () => {
     setOrb(''); show('idleBtns', false);
@@ -77,13 +81,32 @@ function connect() {
     if (!opened) { // nunca llegó a abrir: distinguir token inválido de servidor/red caídos
       try {
         const r = await fetch('/api/push-key', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
-        if (r.status === 401) why = 'Código de acceso inválido o vencido. Borra el icono de la pantalla de inicio y vuelve a instalarlo con el enlace nuevo.';
-        else if (!r.ok) why = `El servidor respondió ${r.status}. Reintentando…`;
+        if (r.status === 401) {
+          if (candIdx + 1 < cands.length) { token = cands[++candIdx]; return setTimeout(connect, 100); } // probar el siguiente
+          return askToken();                                                                               // ninguno sirve: pedirlo
+        }
+        if (!r.ok) why = `El servidor respondió ${r.status}. Reintentando…`;
       } catch { why = 'No alcanzo a Jarvis: revisa que Tailscale esté encendido y que la Mac esté despierta. Reintentando…'; }
     }
     setStatus(why);
     setTimeout(connect, 3000);
   };
+}
+// Ningún código sirvió: se muestra cuál se probó y se deja pegar el bueno (los 48 caracteres tras ?t=).
+function askToken() {
+  setOrb(''); show('idleBtns', false);
+  setStatus(`Código de acceso inválido. Probé: ${cands.map(fp).join(' · ') || 'ninguno'}. Pega el código nuevo (48 caracteres, los que van después de ?t=):`);
+  if ($('tokenForm')) return;
+  const f = document.createElement('form'); f.id = 'tokenForm'; f.style.cssText = 'display:flex;gap:6px;margin-top:12px;justify-content:center';
+  f.innerHTML = '<input id="tokenIn" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="código de 48 caracteres" style="flex:1;max-width:320px;padding:10px;border-radius:8px;border:1px solid #444;background:#111;color:#eee"><button style="padding:10px 14px;border-radius:8px;border:0;background:#2a6df4;color:#fff">Usar</button>';
+  f.onsubmit = (e) => {
+    e.preventDefault();
+    const t = $('tokenIn').value.trim().replace(/^.*[?&]t=/, '').replace(/[^0-9a-fA-F]/g, '').toLowerCase(); // acepta URL completa
+    if (!t) return;
+    token = t; cands.unshift(t); candIdx = 0; store.set('jarvis-token', t);
+    f.remove(); setStatus('Probando el código…'); connect();
+  };
+  $('status').after(f);
 }
 const send = (m) => ws?.readyState === 1 && ws.send(JSON.stringify(m));
 
