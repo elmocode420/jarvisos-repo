@@ -68,9 +68,22 @@ if (store.get('jarvis-active') === '1' && token) boot(false);
 
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/assistant?token=${encodeURIComponent(token)}`);
-  ws.onopen = () => {};
+  let opened = false;
+  ws.onopen = () => { opened = true; };
   ws.onmessage = (e) => onMessage(JSON.parse(e.data));
-  ws.onclose = () => { setStatus('Desconectado. Reintentando…'); setOrb(''); show('idleBtns', false); setTimeout(connect, 3000); };
+  ws.onclose = async () => {
+    setOrb(''); show('idleBtns', false);
+    let why = 'Desconectado. Reintentando…';
+    if (!opened) { // nunca llegó a abrir: distinguir token inválido de servidor/red caídos
+      try {
+        const r = await fetch('/api/push-key', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' });
+        if (r.status === 401) why = 'Código de acceso inválido o vencido. Borra el icono de la pantalla de inicio y vuelve a instalarlo con el enlace nuevo.';
+        else if (!r.ok) why = `El servidor respondió ${r.status}. Reintentando…`;
+      } catch { why = 'No alcanzo a Jarvis: revisa que Tailscale esté encendido y que la Mac esté despierta. Reintentando…'; }
+    }
+    setStatus(why);
+    setTimeout(connect, 3000);
+  };
 }
 const send = (m) => ws?.readyState === 1 && ws.send(JSON.stringify(m));
 
